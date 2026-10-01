@@ -1,0 +1,4 @@
+/target
+
+# Python bytecode from the pty test harness
+__pycache__/
