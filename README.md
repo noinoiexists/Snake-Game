@@ -149,3 +149,7 @@ python3 tools/quit_probe.py ./target/debug/snake /tmp/probe.txt
 
 `--dump` prints the heading's drop shadow as `░` so the letters underneath stay
 readable in plain text.
+
+## Gameplay
+
+![](./assets/screenshots/recording.gif)
