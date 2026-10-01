@@ -11,10 +11,11 @@ piece has a shelf life, shown as a meter under the board, and a piece you ignore
 is a piece you lose. Biting your own tail is the only way to die. There is an autoplay mode.
 
 <p>
-<img src="./assets/screenshots/1.png" width="500">
-<img src="./assets/screenshots/2.png" width="500">
-<img src="./assets/screenshots/3.png" width="500">
+<img src="./assets/screenshots/1.png" width="550">
+<img src="./assets/screenshots/2.png" width="550">
+<img src="./assets/screenshots/3.png" width="550">
 </p>
+
 ## Running it
 
 ```
