@@ -152,4 +152,4 @@ readable in plain text.
 
 ## Gameplay
 
-![](./assets/screenshots/recording.gif)
+<img src="./assets/screenshots/recording.gif" width="550">
