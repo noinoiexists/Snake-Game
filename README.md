@@ -5,24 +5,14 @@
 ---
 
 A terminal Snake in Rust, rendered entirely with Unicode box-drawing and
-geometric glyphs. Two changes to the arcade original: **the edges wrap**, so the
+geometric glyphs. Some changes to the arcade original: **the edges wrap**, so the
 board is a torus and running out of room is impossible, and **food rots**. Every
 piece has a shelf life, shown as a meter under the board, and a piece you ignore
-is a piece you lose. Biting your own tail is the only way to die.
+is a piece you lose. Biting your own tail is the only way to die. There is an autoplay mode.
 
-```
-   ╭─────────────── ◆  Normal  ───────────────╮
-   │                                           │
-   │                              ◆            │
-   │                                           │
-   │                     ●●●●▶                 │
-   │                                           │
-   ╰───────────────────────────────────────────╯
-
-    SCORE 120          ★ 340          LENGTH 9
-    ◆ Golden  ▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱   3.1s
-    COMBO ×4                  ␣ pause   q menu
-```
+![](./assets/screenshots/1.png)
+![](./assets/screenshots/2.png)
+![](./assets/screenshots/3.png)
 
 ## Running it
 
@@ -83,6 +73,10 @@ how long food survives. High scores are kept per difficulty in
 missing, empty or corrupt is treated as empty rather than as an error.
 
 The snake also gets faster as it eats, up to a per-difficulty ceiling.
+
+## Autoplay
+
+A menu toggle that hands steering to the snake itself: each step it scores every legal move by how much open space stays reachable (flood fill), skips any move that would leave it with less room than its own length, and uses BFS shortest-path to the fruit as the tie-break — so on an open board it beelines for the berry, and on a crowded one it prefers to keep circulating over chasing food it can't safely reach. It respects wrapping edges, only follows a tail cell when the tail actually vacates, and never reverses; player turns are ignored while it's on, though pause and menu still work. It's deliberately one move deep against the body as it stands, so past roughly half-board fill it will eventually trap itself.
 
 ## Implementation notes
 

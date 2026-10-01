@@ -78,7 +78,7 @@ fn pulse_for(app: &App, color: Rgb) -> Pulse {
 
 fn draw_menu(app: &App, canvas: &mut Canvas, w: i32, h: i32) {
     let t = app.theme;
-    let r = panel(w, h, 46, 19);
+    let r = panel(w, h, 46, 20);
     fill_panel(canvas, r, t);
     ui::draw_frame(
         canvas,
@@ -147,33 +147,21 @@ fn draw_menu(app: &App, canvas: &mut Canvas, w: i32, h: i32) {
             if active { t.c(pal::PANEL_ALT) } else { bg },
         );
 
-        if *item == MenuItem::Difficulty {
-            let value = app.menu.difficulty.label();
+        // Rows that hold a value print it after the label between a pair of
+        // arrows, so they read as something you can change rather than as a
+        // caption. Autoplay is a plain toggle, so its value is just on/off.
+        let row_bg = if active { t.c(pal::PANEL_ALT) } else { bg };
+        let value = match *item {
+            MenuItem::Difficulty => Some((app.menu.difficulty.label(), pal::FOOD_GOLD)),
+            MenuItem::Autoplay if app.menu.autoplay => Some(("on", pal::OK)),
+            MenuItem::Autoplay => Some(("off", pal::TEXT_FAINT)),
+            _ => None,
+        };
+        if let Some((value, color)) = value {
             let vx = cx + 3;
-            ui::text(
-                canvas,
-                vx,
-                y,
-                "◂ ",
-                t.c(pal::FRAME),
-                if active { t.c(pal::PANEL_ALT) } else { bg },
-            );
-            let vx = ui::text(
-                canvas,
-                vx + 2,
-                y,
-                value,
-                t.c(pal::FOOD_GOLD),
-                if active { t.c(pal::PANEL_ALT) } else { bg },
-            );
-            ui::text(
-                canvas,
-                vx,
-                y,
-                " ▸",
-                t.c(pal::FRAME),
-                if active { t.c(pal::PANEL_ALT) } else { bg },
-            );
+            ui::text(canvas, vx, y, "◂ ", t.c(pal::FRAME), row_bg);
+            let vx = ui::text(canvas, vx + 2, y, value, t.c(color), row_bg);
+            ui::text(canvas, vx, y, " ▸", t.c(pal::FRAME), row_bg);
         }
     }
 
@@ -181,12 +169,23 @@ fn draw_menu(app: &App, canvas: &mut Canvas, w: i32, h: i32) {
     // best score, so the space always says something useful. It sits below the
     // shadow row of the heading, not directly under the letters.
     let status_y = r.y + 9;
-    if app.menu.item() == MenuItem::Difficulty {
+    let item = app.menu.item();
+    if item == MenuItem::Difficulty {
         ui::text_centered_fit(
             canvas,
             r,
             status_y,
             app.menu.difficulty.blurb(),
+            r.w - 4,
+            t.c(pal::TEXT_DIM),
+            surface,
+        );
+    } else if let Some(blurb) = item.blurb() {
+        ui::text_centered_fit(
+            canvas,
+            r,
+            status_y,
+            blurb,
             r.w - 4,
             t.c(pal::TEXT_DIM),
             surface,
@@ -215,7 +214,7 @@ fn draw_menu(app: &App, canvas: &mut Canvas, w: i32, h: i32) {
     ui::text_centered_fit(
         canvas,
         r,
-        r.y + 17,
+        r.y + 18,
         &hints,
         r.w - 4,
         t.c(pal::TEXT_FAINT),
@@ -506,6 +505,20 @@ fn draw_hud(app: &App, canvas: &mut Canvas, game: &Game, fr: Rect) {
     let controls = "␣ pause   q menu";
     let cx = fr.right() - 1 - controls.chars().count() as i32;
     ui::text(canvas, cx, y2, controls, t.c(pal::TEXT_FAINT), surface);
+
+    // While autoplay is driving, the left slot says so instead of showing a
+    // steering hint that no longer does anything.
+    if game.autoplay {
+        let heat = ((game.combo as f32 - 1.0) / 8.0).clamp(0.0, 1.0);
+        let color = pal::VIOLET.lerp(pal::FOOD_GOLD, heat);
+        let label = if game.combo > 1 {
+            format!("AUTOPLAY   COMBO ×{}", game.combo)
+        } else {
+            "AUTOPLAY".to_string()
+        };
+        ui::text(canvas, fr.x + 1, y2, &label, t.c(color), surface);
+        return;
+    }
 
     // The combo outranks the steering hint for the left slot: by the time you
     // have one, you know the controls.
@@ -844,6 +857,67 @@ fn clock(secs: f32) -> String {
 mod tests {
     use super::*;
 
+    /// Everything the canvas ended up holding, one line per row.
+    fn canvas_text(canvas: &Canvas) -> String {
+        (0..canvas.h)
+            .map(|y| {
+                (0..canvas.w)
+                    .map(|x| canvas.get(x, y).ch)
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The one row of the menu carrying `needle`.
+    fn menu_row(app: &App, needle: &str) -> String {
+        let mut canvas = Canvas::new(app.width, app.height);
+        draw(app, &mut canvas);
+        canvas_text(&canvas)
+            .lines()
+            .find(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no menu row contained {needle:?}"))
+            .to_string()
+    }
+
+    #[test]
+    fn the_menu_shows_whether_autoplay_is_on() {
+        let autoplay = MenuItem::ALL
+            .iter()
+            .position(|i| *i == MenuItem::Autoplay)
+            .expect("autoplay must have a menu row");
+
+        for (on, want) in [(false, "◂ off ▸"), (true, "◂ on ▸")] {
+            let mut app = App::new(84, 26);
+            app.scores = crate::scores::Scores::in_memory();
+            app.menu.sel = autoplay;
+            app.menu.autoplay = on;
+            let row = menu_row(&app, "Autoplay");
+            assert!(
+                row.contains(want),
+                "autoplay={on} should read {want:?}, row was {row:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_hud_announces_autoplay_while_it_drives() {
+        let mut app = App::new(84, 26);
+        app.scores = crate::scores::Scores::in_memory();
+        app.view = View::Game;
+        let (gw, gh) = playfield_size(84, 26);
+        let mut game = Game::new(gw, gh, crate::game::Difficulty::Normal, 0);
+        game.autoplay = true;
+        app.game = Some(game);
+
+        let mut canvas = Canvas::new(84, 26);
+        draw(&app, &mut canvas);
+        assert!(
+            canvas_text(&canvas).contains("AUTOPLAY"),
+            "the HUD should say the snake is steering itself"
+        );
+    }
+
     #[test]
     fn playfields_are_always_twice_as_wide_as_tall() {
         for w in 40..200 {
@@ -919,6 +993,9 @@ mod tests {
                 // run in progress so the HUD has real values to print.
                 let (gw, gh) = playfield_size(w, h);
                 let mut game = Game::new(gw, gh, crate::game::Difficulty::Normal, 500);
+                // Steering itself, so the autoplay pathfinder is exercised on
+                // every board size the renderer is asked to cope with.
+                game.autoplay = true;
                 let mut rng = crate::rng::Rng::from_seed(4);
                 for _ in 0..30 {
                     game.update(1.0 / 30.0, &mut rng);

@@ -35,6 +35,8 @@ pub enum Dir {
 }
 
 impl Dir {
+    pub const ALL: [Self; 4] = [Self::Up, Self::Down, Self::Left, Self::Right];
+
     pub fn delta(self) -> (i32, i32) {
         match self {
             Self::Up => (0, -1),
@@ -264,6 +266,8 @@ pub struct Game {
     pub flash: f32,
     /// High score to beat, for display only.
     pub best: u32,
+    /// When set, the snake steers itself and player turns are ignored.
+    pub autoplay: bool,
 
     /// Directions buffered from input, applied one per step so quick
     /// double-turns are not swallowed.
@@ -301,6 +305,7 @@ impl Game {
             elapsed: 0.0,
             flash: 0.0,
             best,
+            autoplay: false,
             pending: VecDeque::new(),
             growth: 0,
             tick: 0.0,
@@ -354,7 +359,9 @@ impl Game {
 
     /// Buffer a turn. Reversals and repeats are dropped.
     pub fn turn(&mut self, d: Dir) {
-        if !matches!(self.status, Status::Playing) {
+        // Autoplay owns the steering, so human turns are dropped rather than
+        // fighting the pathfinder for control of the same buffer.
+        if self.autoplay || !matches!(self.status, Status::Playing) {
             return;
         }
         let last = self.pending.back().copied().unwrap_or(self.dir);
@@ -373,6 +380,144 @@ impl Game {
             Status::Paused => Status::Playing,
             dead => dead,
         };
+    }
+
+    // --- autoplay ---------------------------------------------------------
+
+    /// Choose the snake's next direction when autoplay is on.
+    ///
+    /// Survival comes first, speed second. Every candidate is scored on how
+    /// much open space it leaves reachable, and the shortest route to the food
+    /// only breaks ties between moves that are otherwise as roomy as each
+    /// other. On a board with space to spare that means the snake beelines for
+    /// the berry — every move reaches the same open area — while on a crowded
+    /// one it is free to ignore a berry it cannot safely reach and keep
+    /// circulating instead of coiling itself into a dead end.
+    ///
+    /// A move is skipped outright if it leaves less open space than the snake
+    /// has length, which is what stops it walking into a pocket. That test is
+    /// deliberately shallow — the body is treated as fixed rather than as the
+    /// thing that shuffles along behind the head — so it measures the shape of
+    /// the space, not whether the snake can actually turn round in it. It is
+    /// meant to look competent, not to be unbeatable.
+    pub fn autoplay_dir(&self) -> Option<Dir> {
+        let food = self.food?;
+        if !matches!(self.status, Status::Playing) {
+            return None;
+        }
+        let head = self.head();
+        let len = self.snake.len();
+
+        // The tail vacates its cell on the next step unless the snake is
+        // growing, so following it is legal and must not count as a wall.
+        let tail_moves = self.growth == 0 && len > 1;
+        let mut blocked = vec![false; (self.w * self.h) as usize];
+        for (i, seg) in self.snake.iter().enumerate() {
+            if tail_moves && i == len - 1 {
+                continue;
+            }
+            blocked[self.index(*seg)] = true;
+        }
+
+        // How much free space is left at all. Once the snake is longer than
+        // that, "room for the whole body" stops being achievable and the bar
+        // becomes keeping every remaining cell reachable instead.
+        let free_total = blocked.iter().filter(|b| !**b).count();
+        let min_room = len.min(free_total) as u32;
+
+        // Best safe move seen, and the roomiest move overall as a fallback for
+        // when every option is a tight squeeze.
+        let mut best: Option<(u32, u32, Dir)> = None; // (room, steps, dir)
+        let mut roomiest: Option<(u32, Dir)> = None;
+
+        for d in Dir::ALL {
+            if d.is_opposite(self.dir) {
+                continue;
+            }
+            let next = self.wrapped(head, d);
+            if blocked[self.index(next)] {
+                continue;
+            }
+            let room = self.reachable(next, &blocked);
+            if roomiest.is_none_or(|(best, _)| room > best) {
+                roomiest = Some((room, d));
+            }
+            if room < min_room {
+                continue;
+            }
+            // `u32::MAX` means the food cannot be reached from here, which is
+            // fine — such a move still competes on space alone.
+            let steps = self.steps_to(next, food.pos, &blocked).unwrap_or(u32::MAX);
+            let better = match best {
+                None => true,
+                Some((best_room, best_steps, _)) => {
+                    room > best_room || (room == best_room && steps < best_steps)
+                }
+            };
+            if better {
+                best = Some((room, steps, d));
+            }
+        }
+
+        best.map(|(_, _, d)| d).or_else(|| roomiest.map(|(_, d)| d))
+    }
+
+    /// `p` moved one step in direction `d`, wrapped back onto the board.
+    fn wrapped(&self, p: Pos, d: Dir) -> Pos {
+        let (dx, dy) = d.delta();
+        Pos::new((p.x + dx).rem_euclid(self.w), (p.y + dy).rem_euclid(self.h))
+    }
+
+    /// Flat index of `p` into the `w * h` cell arrays used by the searches.
+    fn index(&self, p: Pos) -> usize {
+        (p.y * self.w + p.x) as usize
+    }
+
+    /// Shortest number of steps from `from` to `goal`, treating `blocked` cells
+    /// as walls. `None` when the goal cannot be reached at all.
+    fn steps_to(&self, from: Pos, goal: Pos, blocked: &[bool]) -> Option<u32> {
+        if from == goal {
+            return Some(0);
+        }
+        let mut seen = vec![false; blocked.len()];
+        seen[self.index(from)] = true;
+        let mut queue = VecDeque::from([(from, 0u32)]);
+        while let Some((p, dist)) = queue.pop_front() {
+            for d in Dir::ALL {
+                let next = self.wrapped(p, d);
+                let i = self.index(next);
+                if seen[i] || blocked[i] {
+                    continue;
+                }
+                if next == goal {
+                    return Some(dist + 1);
+                }
+                seen[i] = true;
+                queue.push_back((next, dist + 1));
+            }
+        }
+        None
+    }
+
+    /// How many free cells can be walked to from `from` without crossing
+    /// `blocked`. A cheap proxy for "is there room to survive in here".
+    fn reachable(&self, from: Pos, blocked: &[bool]) -> u32 {
+        let mut seen = vec![false; blocked.len()];
+        seen[self.index(from)] = true;
+        let mut queue = VecDeque::from([from]);
+        let mut count = 0;
+        while let Some(p) = queue.pop_front() {
+            count += 1;
+            for d in Dir::ALL {
+                let next = self.wrapped(p, d);
+                let i = self.index(next);
+                if !seen[i] && !blocked[i] {
+                    seen[i] = true;
+                    queue.push_back(next);
+                }
+            }
+        }
+        count
     }
 
     /// Advance the simulation by `dt` seconds.
@@ -436,7 +581,14 @@ impl Game {
     }
 
     fn step(&mut self, rng: &mut Rng) {
-        if let Some(d) = self.pending.pop_front() {
+        if self.autoplay {
+            // Decide at the moment of the step, from the head's real position,
+            // so the choice can never go stale in the input buffer.
+            self.pending.clear();
+            if let Some(d) = self.autoplay_dir() {
+                self.dir = d;
+            }
+        } else if let Some(d) = self.pending.pop_front() {
             self.dir = d;
         }
         let (dx, dy) = self.dir.delta();
@@ -710,6 +862,99 @@ mod tests {
         assert!(g.speed() > start);
         g.eaten = 100_000;
         assert_eq!(g.speed(), g.difficulty.max_speed());
+    }
+
+    /// Food placed `dx` cells from the head, on the head's own row.
+    fn food_at(g: &Game, dx: i32) -> Food {
+        Food {
+            pos: Pos::new(g.head().x + dx, g.head().y),
+            kind: FoodKind::Berry,
+            remaining: 5.0,
+            total: 5.0,
+        }
+    }
+
+    #[test]
+    fn autoplay_heads_straight_for_the_food() {
+        let mut g = game();
+        g.autoplay = true;
+        g.food = Some(food_at(&g, 6));
+        // Open board, food dead ahead: the shortest route is to keep going.
+        assert_eq!(g.autoplay_dir(), Some(Dir::Right));
+    }
+
+    #[test]
+    fn autoplay_never_reverses_into_itself() {
+        let mut rng = Rng::from_seed(4);
+        let mut g = game();
+        g.autoplay = true;
+        // Food directly behind the head, so the only way to reach it is a turn.
+        g.food = Some(food_at(&g, -6));
+        let dir = g
+            .autoplay_dir()
+            .expect("a move should exist on an open board");
+        assert!(!dir.is_opposite(g.dir), "autoplay tried to reverse");
+
+        // And it must not die doing it.
+        for _ in 0..200 {
+            g.update(1.0 / 60.0, &mut rng);
+            assert_eq!(g.status, Status::Playing, "autoplay killed the snake");
+        }
+    }
+
+    #[test]
+    fn autoplay_refuses_a_step_into_its_own_body() {
+        let mut g = game();
+        g.autoplay = true;
+        // Coil the snake so the cell dead ahead is its own neck.
+        let h = g.head();
+        g.snake = VecDeque::from([
+            h,
+            Pos::new(h.x + 1, h.y),
+            Pos::new(h.x + 2, h.y),
+            Pos::new(h.x + 2, h.y + 1),
+            Pos::new(h.x + 2, h.y + 2),
+            Pos::new(h.x + 1, h.y + 2),
+        ]);
+        g.growth = 0;
+        g.food = Some(food_at(&g, 8));
+        let dir = g.autoplay_dir().expect("a way out should exist");
+        assert_ne!(dir, Dir::Right, "autoplay walked into its own neck");
+    }
+
+    #[test]
+    fn autoplay_ignores_player_turns() {
+        let mut g = game();
+        g.autoplay = true;
+        g.turn(Dir::Up);
+        assert!(g.pending.is_empty(), "autoplay should own the steering");
+    }
+
+    #[test]
+    fn autoplay_survives_and_scores_over_a_long_run() {
+        // The whole point of the feature: left alone on an open board, the
+        // snake should eat steadily rather than coil itself into a corner.
+        //
+        // The window is a hundred seconds on purpose. The search is one move
+        // deep, so past the point where the body covers half the board it will
+        // eventually squeeze itself into a pocket and die; holding it to a
+        // longer run here would be asserting a stronger bot than this is meant
+        // to be.
+        for seed in 0..8u64 {
+            let mut rng = Rng::from_seed(seed + 1);
+            let mut g = Game::new(24, 12, Difficulty::Normal, 0);
+            g.autoplay = true;
+            for _ in 0..6_000 {
+                g.update(1.0 / 60.0, &mut rng);
+            }
+            assert_eq!(
+                g.status,
+                Status::Playing,
+                "seed {seed}: autoplay died after eating {}",
+                g.eaten
+            );
+            assert!(g.eaten >= 15, "seed {seed}: only ate {}", g.eaten);
+        }
     }
 
     #[test]

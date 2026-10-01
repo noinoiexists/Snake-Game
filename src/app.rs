@@ -24,19 +24,36 @@ pub enum View {
 pub enum MenuItem {
     Play,
     Difficulty,
+    Autoplay,
     HowTo,
     Quit,
 }
 
 impl MenuItem {
-    pub const ALL: [Self; 4] = [Self::Play, Self::Difficulty, Self::HowTo, Self::Quit];
+    pub const ALL: [Self; 5] = [
+        Self::Play,
+        Self::Difficulty,
+        Self::Autoplay,
+        Self::HowTo,
+        Self::Quit,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Play => "Play",
             Self::Difficulty => "Difficulty",
+            Self::Autoplay => "Autoplay",
             Self::HowTo => "How to Play",
             Self::Quit => "Quit",
+        }
+    }
+
+    /// One line explaining the row while it is highlighted. `None` for rows
+    /// that speak for themselves.
+    pub fn blurb(self) -> Option<&'static str> {
+        match self {
+            Self::Autoplay => Some("let the snake find its own way"),
+            _ => None,
         }
     }
 }
@@ -44,11 +61,17 @@ impl MenuItem {
 pub struct Menu {
     pub sel: usize,
     pub difficulty: Difficulty,
+    /// Whether the chosen run should steer itself.
+    pub autoplay: bool,
 }
 
 impl Menu {
     fn new(difficulty: Difficulty) -> Self {
-        Self { sel: 0, difficulty }
+        Self {
+            sel: 0,
+            difficulty,
+            autoplay: false,
+        }
     }
 
     pub fn item(&self) -> MenuItem {
@@ -193,7 +216,9 @@ impl App {
     fn start_game(&mut self, difficulty: Difficulty) {
         let (w, h) = views::playfield_size(self.width, self.height);
         let best = self.scores.best(difficulty);
-        self.game = Some(Game::new(w, h, difficulty, best));
+        let mut game = Game::new(w, h, difficulty, best);
+        game.autoplay = self.menu.autoplay;
+        self.game = Some(game);
         self.new_best = false;
         self.view = View::Game;
     }
@@ -240,6 +265,7 @@ impl App {
         match self.menu.item() {
             MenuItem::Play => self.start_game(self.menu.difficulty),
             MenuItem::Difficulty => self.cycle_difficulty(true),
+            MenuItem::Autoplay => self.menu.autoplay = !self.menu.autoplay,
             MenuItem::HowTo => self.view = View::Help,
             MenuItem::Quit => self.should_quit = true,
         }
@@ -371,7 +397,7 @@ mod tests {
     #[test]
     fn quit_item_requests_exit() {
         let mut a = app();
-        a.menu.sel = 3;
+        a.menu.sel = MenuItem::ALL.len() - 1;
         assert_eq!(a.menu.item(), MenuItem::Quit);
         a.on_key(key(KeyCode::Enter));
         assert!(a.should_quit);
@@ -384,6 +410,31 @@ mod tests {
         a.on_key(key(KeyCode::Enter));
         assert_eq!(a.view, View::Game);
         assert_eq!(a.game.as_ref().unwrap().difficulty, Difficulty::Insane);
+    }
+
+    #[test]
+    fn the_menu_toggle_flips_autoplay_both_ways() {
+        let mut a = app();
+        a.menu.sel = MenuItem::ALL
+            .iter()
+            .position(|i| *i == MenuItem::Autoplay)
+            .unwrap();
+        assert!(!a.menu.autoplay, "autoplay should start off");
+
+        a.on_key(key(KeyCode::Enter));
+        assert!(a.menu.autoplay);
+        assert_eq!(a.view, View::Menu, "the toggle must not start a game");
+
+        a.on_key(key(KeyCode::Enter));
+        assert!(!a.menu.autoplay, "a second press should turn it back off");
+    }
+
+    #[test]
+    fn autoplay_carries_from_the_menu_into_the_run() {
+        let mut a = app();
+        a.menu.autoplay = true;
+        a.start_game(Difficulty::Normal);
+        assert!(a.game.as_ref().unwrap().autoplay);
     }
 
     #[test]
